@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Three.js Bone Inspector</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; font-family: 'Segoe UI', sans-serif; color: white; }
+        
+        /* SIDEBAR STYLING */
+        #sidebar {
+            position: absolute; top: 0; right: 0; width: 280px; height: 100vh;
+            background: rgba(30, 30, 30, 0.95); padding: 20px; box-sizing: border-box;
+            border-left: 1px solid #555; pointer-events: none; /* Klik tembus kecuali elemen interaktif */
+            display: flex; flex-direction: column;
+        }
+        
+        h2 { font-size: 18px; margin-top: 0; color: #4db8ff; border-bottom: 1px solid #444; padding-bottom: 10px; margin-bottom: 20px; }
+        
+        .info-box { 
+            background: #2a2a2a; padding: 15px; border-radius: 6px; 
+            margin-bottom: 15px; border-left: 4px solid #adff2f; 
+            pointer-events: auto; /* Agar bisa select text */
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+
+        .label { font-size: 11px; color: #aaa; text-transform: uppercase; margin-bottom: 5px; display: block; letter-spacing: 1px;}
+        .value { font-size: 15px; font-weight: bold; color: #fff; word-break: break-all; }
+        
+        /* Grid untuk Rotasi */
+        .rot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 5px; }
+        .rot-item { background: #111; padding: 5px 8px; border-radius: 4px; font-family: monospace; font-size: 13px; }
+        .rot-item span { color: #adff2f; margin-right: 5px; }
+
+        #status { color: #f00; font-weight: bold; margin-bottom: 20px; pointer-events: auto; font-size: 14px;}
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; color: white; text-shadow: 0 0 10px black; pointer-events: none;}
+    </style>
+</head>
+<body>
+
+    <div id="loading">Loading Model...</div>
+    
+    <div id="sidebar">
+        <h2>Bone Inspector</h2>
+        <div id="status">Disconnected</div>
+
+        <div class="info-box">
+            <span class="label">Bone Terpilih</span>
+            <div id="boneName" class="value">-</div>
+        </div>
+
+        <div class="info-box">
+            <span class="label">Rotasi (Quaternion)</span>
+            <div class="rot-grid">
+                <div class="rot-item"><span>X:</span><b id="rotX">0.00</b></div>
+                <div class="rot-item"><span>Y:</span><b id="rotY">0.00</b></div>
+                <div class="rot-item"><span>Z:</span><b id="rotZ">0.00</b></div>
+                <div class="rot-item"><span>W:</span><b id="rotW">1.00</b></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Setup Scene ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x222222);
+        
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(2, 1.5, 4);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 1, 0);
+        controls.update();
+
+        // Pencahayaan (Penting agar SOLID material terlihat bagus)
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(5, 10, 7);
+        scene.add(dirLight);
+        
+        // Backlight agar bone terlihat jelas dari belakang
+        const backLight = new THREE.DirectionalLight(0x5555ff, 0.5);
+        backLight.position.set(-5, 5, -5);
+        scene.add(backLight);
+
+        scene.add(new THREE.GridHelper(20, 20, 0x444444, 0x222222));
+
+        // --- Variables ---
+        let model;
+        let boneVisuals = [];
+        let selectedVisual = null; // Menyimpan mesh visual yang dipilih
+        let selectedBoneObj = null; // Menyimpan object bone asli Three.js
+        
+        const initialQuaternions = new Map();
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        // --- Utils ---
+        function sanitizeName(name) {
+            return name.replace(/\./g, ""); 
+        }
+
+        // --- WebSocket Logic ---
+        function setupWebSocket() {
+            const ws = new WebSocket("ws://localhost:8765");
+            const statusDiv = document.getElementById('status');
+
+            ws.onopen = () => {
+                statusDiv.innerText = "Connected via WebSocket";
+                statusDiv.style.color = "#0f0";
+            };
+
+            ws.onmessage = (event) => {
+                if (!model) return;
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.bones) {
+                        applyBoneRotations(data.bones);
+                    }
+                } catch (e) { console.error(e); }
+            };
+
+            ws.onclose = () => {
+                statusDiv.innerText = "Disconnected";
+                statusDiv.style.color = "#f00";
+                setTimeout(setupWebSocket, 2000);
+            };
+        }
+
+        // --- Core Logic: Apply Relative Rotation ---
+        function applyBoneRotations(boneData) {
+            for (const [rawName, rot] of Object.entries(boneData)) {
+                const name = sanitizeName(rawName);
+                const bone = model.getObjectByName(name);
+                
+                if (bone) {
+                    const initialQ = initialQuaternions.get(name);
+                    const blenderDelta = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
+
+                    if (initialQ) {
+                        bone.quaternion.copy(initialQ).multiply(blenderDelta);
+                    }
+                }
+            }
+        }
+
+        // --- Setup Model & Visuals ---
+        function createBoneVisuals(root) {
+            // Parameter Cylinder: (radiusAtas, radiusBawah, tinggi, radialSegments)
+            const radius = 0.015;
+            const geo = new THREE.CylinderGeometry(radius, radius, 1, 8);
+
+            const mat = new THREE.MeshPhongMaterial({ 
+                color: 0xffff00, 
+                flatShading: true,
+                shininess: 60,
+                emissive: 0x222200,
+                depthTest: false,
+                depthWrite: false,
+                transparent: true,
+                opacity: 0.8
+            });
+
+            const selectedMat = new THREE.MeshPhongMaterial({ 
+                color: 0xff0055, 
+                flatShading: true,
+                emissive: 0x550022,
+                depthTest: false,
+                depthWrite: false,
+                transparent: true,
+                opacity: 0.9
+            });
+
+            root.traverse((obj) => {
+                if (obj.isBone) {
+                    const cleanName = sanitizeName(obj.name);
+                    obj.name = cleanName;
+                    initialQuaternions.set(cleanName, obj.quaternion.clone());
+
+                    const mesh = new THREE.Mesh(geo, mat.clone());
+                    mesh.renderOrder = 999; 
+
+                    mesh.userData.boneRef = obj;
+                    mesh.userData.originalMat = mesh.material;
+                    mesh.userData.selectedMat = selectedMat;
+                    
+                    const child = obj.children.find(c => c.isBone);
+                    if (child && child.position.length() > 0.01) {
+                        const len = child.position.length();
+                        
+                        mesh.position.copy(child.position).multiplyScalar(0.5);
+                        
+                        // Arahkan silinder ke posisi anak bone
+                        const direction = new THREE.Vector3().copy(child.position).normalize();
+                        const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+                        mesh.quaternion.copy(quaternion);
+                        mesh.scale.set(1, len, 1); 
+                    } else {
+                        // Untuk bone ujung yang tidak punya anak (end bone)
+                        mesh.position.set(0, 0.05, 0);
+                        mesh.scale.set(1, 0.1, 1);
+                    }
+                    
+                    obj.add(mesh);
+                    boneVisuals.push(mesh);
+                }
+            });
+        }
+
+        // --- Load GLTF ---
+        const loader = new GLTFLoader();
+        loader.load('character.glb', (gltf) => {
+            model = gltf.scene;
+            scene.add(model);
+            
+            // Optional: Hide original mesh jika ingin melihat bone saja
+            // model.traverse(c => { if(c.isMesh) c.visible = false; });
+
+            createBoneVisuals(model);
+            
+            document.getElementById('loading').style.display = 'none';
+            setupWebSocket();
+
+        }, undefined, (e) => {
+            console.error(e);
+            document.getElementById('loading').innerText = "Error: character.glb not found";
+        });
+
+        // --- Interaction ---
+        window.addEventListener('pointerdown', (e) => {
+            // Hanya deteksi klik kiri
+            if(e.button !== 0) return;
+
+            mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const hits = raycaster.intersectObjects(boneVisuals);
+            
+            if(hits.length > 0) {
+                const hitMesh = hits[0].object;
+                
+                // Reset seleksi sebelumnya
+                if (selectedVisual) {
+                    selectedVisual.material = selectedVisual.userData.originalMat;
+                }
+
+                // Set seleksi baru
+                selectedVisual = hitMesh;
+                selectedBoneObj = hitMesh.userData.boneRef;
+                selectedVisual.material = selectedVisual.userData.selectedMat;
+
+                // Update Nama di UI
+                document.getElementById('boneName').innerText = selectedBoneObj.name;
+            } else {
+                // Klik di ruang kosong = Deselect
+                if (selectedVisual) {
+                    selectedVisual.material = selectedVisual.userData.originalMat;
+                    selectedVisual = null;
+                    selectedBoneObj = null;
+                    document.getElementById('boneName').innerText = "-";
+                    resetRotationUI();
+                }
+            }
+        });
+
+        function resetRotationUI() {
+            document.getElementById('rotX').innerText = "0.00";
+            document.getElementById('rotY').innerText = "0.00";
+            document.getElementById('rotZ').innerText = "0.00";
+            document.getElementById('rotW').innerText = "0.00";
+        }
+
+        // --- Update UI Loop ---
+        function updateSidebarUI() {
+            if (selectedBoneObj) {
+                // Ambil rotasi saat ini (Quaternion)
+                const q = selectedBoneObj.quaternion;
+                
+                // Tampilkan 3 angka di belakang koma
+                document.getElementById('rotX').innerText = q.x.toFixed(3);
+                document.getElementById('rotY').innerText = q.y.toFixed(3);
+                document.getElementById('rotZ').innerText = q.z.toFixed(3);
+                document.getElementById('rotW').innerText = q.w.toFixed(3);
+            }
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Update UI setiap frame agar angka bergerak
+            updateSidebarUI();
+            
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>

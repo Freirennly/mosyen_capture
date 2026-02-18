@@ -1,198 +1,227 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import React, { Suspense, useRef, useState } from "react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { 
+  useGLTF, 
+  Float, 
+  Environment, 
+  ContactShadows, 
+  Center 
+} from "@react-three/drei";
 import * as THREE from "three";
-import { gsap } from "gsap";
+import { easing } from "maath"; 
 import { Navbar } from "@/components/layout/NavBar";
 
+// --- DATA PENJELASAN KOMPONEN ---
+const DESCRIPTIONS: Record<string, { title: string; info: string }> = {
+  tutup: { title: "Top Enclosure", info: "Pelindung luar bagian atas yang dirancang untuk melindungi komponen elektronik dari debu." },
+  wadah: { title: "Bottom Case", info: "Struktur dasar kokoh yang menyatukan seluruh modul dan menjaga stabilitas perangkat." },
+  OLED: { title: "OLED Display", info: "Layar monitor kecil untuk menampilkan status sensor." },
+  VIN: { title: "Voltage Input", info: "Modul manajemen daya yang mengatur tegangan masuk agar aman bagi komponen internal." },
+  MPU6050: { title: "IMU Sensor", info: "Sensor akselerometer dan giroskop 6-axis untuk mendeteksi orientasi gerak presisi." },
+  pcb: { title: "Main PCB", info: "Papan sirkuit utama yang menghubungkan jalur komunikasi antar semua modul elektronik." },
+  C3_SUPERMINI: { title: "Microcontroller", info: "ESP32-C3 sebagai otak perangkat yang mengolah data dan mendukung koneksi nirkabel." },
+};
+
+// --- KOMPONEN MODEL ---
+function Model({ isDetail, setHovered }: { isDetail: boolean; setHovered: (name: string | null) => void }) {
+  const { scene } = useGLTF("/models/PCB.glb");
+  const modelRef = useRef<THREE.Group>(null);
+  const autoRotationRef = useRef(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [localHover, setLocalHover] = useState<string | null>(null);
+
+  const targetNames = ["tutup", "wadah", "OLED", "VIN", "MPU6050", "pcb", "C3_SUPERMINI"];
+
+  useFrame((state, delta) => {
+    if (modelRef.current) {
+      const isHoveringComponent = isDetail && localHover !== null;
+      if (!isDragging && !isHoveringComponent) {
+        autoRotationRef.current += 0.005;
+      }
+
+      const mouseRotation = isDragging ? state.mouse.x * Math.PI : 0;
+      const targetRotationY = autoRotationRef.current + mouseRotation;
+      easing.damp(modelRef.current.rotation, "y", targetRotationY, 0.25, delta);
+      easing.damp(modelRef.current.rotation, "x", 0.5, 0.25, delta);
+
+      const targetPositionY = isDetail ? 0 : 0.3;
+      easing.damp(modelRef.current.position, "y", targetPositionY, 0.4, delta);
+
+      scene.traverse((obj) => {
+        const isCurrentlyHovered = isDetail && localHover === obj.name;
+        const hoverOffset = isCurrentlyHovered ? 0.002 : 0;
+
+        if (obj.name === "wadah") {
+          easing.damp(obj.position, "y", (isDetail ? -0.02 : 0) + hoverOffset, 0.2, delta);
+        } else if (obj.name === "tutup") {
+          easing.damp(obj.position, "y", (isDetail ? 0.02 : 0) + hoverOffset, 0.2, delta);
+        } else if (["OLED", "MPU6050", "C3_SUPERMINI", "VIN"].includes(obj.name)) {
+          easing.damp(obj.position, "y", (isDetail ? 0.01 : 0) + hoverOffset, 0.2, delta);
+        } else if (obj.name === "pcb") {
+          easing.damp(obj.position, "y", (isDetail ? -0.0025 : 0) + hoverOffset, 0.2, delta);
+        }
+      });
+
+      const targetScale = isDetail ? 35 : 40;
+      easing.damp3(modelRef.current.scale, [targetScale, targetScale, targetScale], 0.4, delta);
+    }
+  });
+
+  return (
+    <Float 
+      speed={isDetail && localHover ? 0 : 2} 
+      rotationIntensity={0.2} 
+      floatIntensity={0.5}
+    >
+      <group 
+        ref={modelRef}
+        onPointerDown={(e) => { e.stopPropagation(); setIsDragging(true); }}
+        onPointerUp={() => setIsDragging(false)}
+        onPointerLeave={() => {
+          setIsDragging(false);
+          setLocalHover(null);
+          setHovered(null);
+        }}
+        onPointerOver={(e) => {
+          if (!isDetail) return;
+          e.stopPropagation();
+          let current: THREE.Object3D | null = e.object;
+          while (current && !targetNames.includes(current.name)) {
+            current = current.parent;
+          }
+          if (current) {
+            setLocalHover(current.name);
+            setHovered(current.name);
+          }
+        }}
+        onPointerOut={() => {
+          setLocalHover(null);
+          setHovered(null);
+        }}
+      >
+        <Center>
+          <primitive object={scene} />
+        </Center>
+      </group>
+    </Float>
+  );
+}
+
+function Pedestal() {
+  return (
+    <group position={[0, -2.3, 0]}>
+      <mesh>
+        <cylinderGeometry args={[1.2, 1.2, 3.5, 64]} />
+        <meshStandardMaterial color="#ffffff" metalness={0.5} roughness={0.8} />
+      </mesh>
+    </group>
+  );
+}
+
+function SceneContent({ isDetail, setHovered }: { isDetail: boolean; setHovered: (name: string | null) => void }) {
+  const sceneGroup = useRef<THREE.Group>(null);
+  const modelWrapperRef = useRef<THREE.Group>(null);
+
+  useFrame((state, delta) => {
+    if (sceneGroup.current) {
+      const targetX = isDetail ? 0 : 1.5;
+      const targetY = isDetail ? -0.5 : 0;
+      easing.damp3(sceneGroup.current.position, [targetX, targetY, 0], 0.4, delta);
+    }
+    if (modelWrapperRef.current) {
+      const modelLift = isDetail ? 0.8 : 0;
+      easing.damp(modelWrapperRef.current.position, "y", modelLift, 0.4, delta);
+    }
+  });
+
+  return (
+    <group ref={sceneGroup}>
+      <group ref={modelWrapperRef}>
+        <Model isDetail={isDetail} setHovered={setHovered} />
+      </group>
+      <Pedestal />
+    </group>
+  );
+}
+
+// --- MAIN PAGE ---
 export default function HomePage() {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-    const [isLoaded, setIsLoaded] = useState(false);
+  const [isDetail, setIsDetail] = useState(false);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
-useEffect(() => {
-    if (!canvasRef.current) return;
-
-    // Scene setup
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera( 45,(window.innerWidth / 2) / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 0, 6);
-
-    const renderer = new THREE.WebGLRenderer({
-        canvas: canvasRef.current,
-        antialias: true,
-        alpha: true,
-    });
-    renderer.setSize(window.innerWidth / 2, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambientLight);
-
-    const mainLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    mainLight.position.set(5, 5, 5);
-    scene.add(mainLight);
-
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
-    fillLight.position.set(-5, -3, 3);
-    scene.add(fillLight);
-
-    // heart shape
-    const heartShape = new THREE.Shape();
-    const x = 0, y = 0;
-    heartShape.moveTo(x + 0.5, y + 0.5);
-    heartShape.bezierCurveTo(x + 0.5, y + 0.5, x + 0.4, y, x, y);
-    heartShape.bezierCurveTo(x - 0.6, y, x - 0.6, y + 0.7, x - 0.6, y + 0.7);
-    heartShape.bezierCurveTo(x - 0.6, y + 1.1, x - 0.3, y + 1.54, x + 0.5, y + 1.9);
-    heartShape.bezierCurveTo(x + 1.2, y + 1.54, x + 1.6, y + 1.1, x + 1.6, y + 0.7);
-    heartShape.bezierCurveTo(x + 1.6, y + 0.7, x + 1.6, y, x + 1.0, y);
-    heartShape.bezierCurveTo(x + 0.7, y, x + 0.5, y + 0.5, x + 0.5, y + 0.5);
-
-    // Extrude heart 3D
-    const extrudeSettings = {
-        depth: 0.3,
-        bevelEnabled: true,
-        bevelThickness: 0.1,
-        bevelSize: 0.05,
-        bevelSegments: 8,
-        };
-
-        const heartGeometry = new THREE.ExtrudeGeometry(heartShape, extrudeSettings);
-        heartGeometry.center();
-
-        const heartMaterial = new THREE.MeshStandardMaterial({
-        color: 0xb0b0b0,
-        metalness: 0.4,
-        roughness: 0.3,
-        });
-
-        const heart = new THREE.Mesh(heartGeometry, heartMaterial);
-        heart.position.y = 0.8;
-        heart.scale.set(0.7, 0.7, 0.7);
-        heart.rotation.z = Math.PI;
-        scene.add(heart);
-
-        // cylinder pedestal
-        const cylinderGeometry = new THREE.CylinderGeometry(1.2, 1.2, 1.8, 64);
-        const cylinderMaterial = new THREE.MeshStandardMaterial({
-        color: 0xd0d0d0,
-        metalness: 0.2,
-        roughness: 0.5,
-        });
-        const cylinder = new THREE.Mesh(cylinderGeometry, cylinderMaterial);
-        cylinder.position.y = -0.6;
-        scene.add(cylinder);
-
-        // horizontal cutout stripes
-        const createStripe = (yPos: number) => {
-        const stripeGeometry = new THREE.BoxGeometry(3, 0.18, 0.8);
-        const stripeMaterial = new THREE.MeshStandardMaterial({
-            color: 0x1a1a1a,
-            metalness: 0.9,
-            roughness: 0.1,
-        });
-        const stripe = new THREE.Mesh(stripeGeometry, stripeMaterial);
-        stripe.position.set(0, yPos, 0);
-        scene.add(stripe);
-        return stripe;
-        };
-
-        createStripe(1.0);
-        createStripe(0.55);
-
-        // Mouse interaction
-        let mouseX = 0;
-        let mouseY = 0;
-        let targetRotationY = 0;
-
-        const handleMouseMove = (event: MouseEvent) => {
-        mouseX = (event.clientX / window.innerWidth) * 2 - 1;
-        mouseY = -(event.clientY / window.innerHeight) * 2 + 1;
-        };
-
-        window.addEventListener("mousemove", handleMouseMove);
-
-        // GSAP Animations
-        gsap.to(heart.position, {
-        y: 1.0,
-        duration: 2.5,
-        repeat: -1,
-        yoyo: true,
-        ease: "sine.inOut",
-        });
-
-        // Animation loop
-        const animate = () => {
-        requestAnimationFrame(animate);
-
-        targetRotationY += 0.005;
-        heart.rotation.y = targetRotationY + mouseX * 0.3;
-
-        camera.position.x += (mouseX * 0.3 - camera.position.x) * 0.05;
-        camera.position.y += (mouseY * 0.2 - camera.position.y) * 0.05;
-        camera.lookAt(0, 0, 0);
-
-        renderer.render(scene, camera);
-        };
-
-        animate();
-        setIsLoaded(true);
-
-        // Handle resize
-        const handleResize = () => {
-        camera.aspect = (window.innerWidth / 2) / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth / 2, window.innerHeight);
-        };
-
-        window.addEventListener("resize", handleResize);
-
-        // Cleanup
-        return () => {
-        window.removeEventListener("mousemove", handleMouseMove);
-        window.removeEventListener("resize", handleResize);
-        renderer.dispose();
-        heartGeometry.dispose();
-        heartMaterial.dispose();
-        cylinderGeometry.dispose();
-        cylinderMaterial.dispose();
-        };
-    }, []);
-
-    return (
-        <div className="relative min-h-screen bg-black overflow-hidden">
-                <div className="flex items-center justify-between px-10 py-9 text-white text-x2 font-reguler tracking-wide">
-            MOSYEN
-            </div>      
-            <Navbar />
-        {/* 3D Canvas - Right Side */}
-        <canvas
-            ref={canvasRef}
-            className={`fixed right-0 top-0 w-1/2 h-full transition-opacity duration-1000 ${
-            isLoaded ? "opacity-100" : "opacity-0"
-            }`}
-        />
-
-        {/* Left Content */}
+  return (
+    <div className="relative min-h-screen bg-black overflow-hidden font-sans">
+      {/* Tampilan Header Awal */}
+      <div className={`transition-opacity duration-1000 ${isDetail ? "opacity-0 pointer-events-none" : "opacity-100"}`}>
+        <div className="absolute top-0 left-0 w-full hidden md:flex items-center justify-between px-10 py-9 text-white text-xl font-light tracking-widest z-20">
+          MOSYEN
+        </div>
+        <Navbar />
         <div className="absolute left-10 top-1/2 -translate-y-1/2 z-10 max-w-xl">
-            <h1 className="text-white text-6xl font-light leading-tight mb-6">
-            MOSYEN Our
-            <br />
-            Precision Motion
-            <br />
-            Capture Technology
-            </h1>
+          <h1 className="text-white text-6xl font-extralight leading-tight mb-6">
+            MOSYEN Our<br />
+            <span className="font-medium text-zinc-200">Precision Motion</span><br />
+            Capture Tech
+          </h1>
+          <p className="text-zinc-500 text-lg font-light italic">Click the device to explore internals.</p>
+        </div>
+      </div>
 
-            <p className="text-zinc-400 text-base font-light leading-relaxed">
-            MOSYEN is an innovative motion capture device designed to
-            <br />
-            accurately record, analyze, and visualize movement in real time,
-            <br />
-            supporting animation, research, and interactive technology
-            <br />
-            development.
-            </p>
+      {/* Overlay Penjelasan saat Hover (Hanya di mode Detail) */}
+      {isDetail && hoveredKey && DESCRIPTIONS[hoveredKey] && (
+        <div className="absolute top-32 right-12 z-[60] text-right pointer-events-none transition-all duration-300 animate-in fade-in slide-in-from-right-4">
+          <h2 className="text-white text-4xl font-light tracking-tighter mb-2 uppercase">
+            {DESCRIPTIONS[hoveredKey].title}
+          </h2>
+          <p className="text-zinc-400 max-w-sm text-sm leading-relaxed ml-auto">
+            {DESCRIPTIONS[hoveredKey].info}
+          </p>
+          <div className="mt-4 h-[1px] w-24 bg-white/30 ml-auto" />
         </div>
-        </div>
-    );
+      )}
+
+      {/* Tombol Return */}
+      {isDetail && (
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsDetail(false);
+            setHoveredKey(null);
+          }}
+          className="absolute bottom-12 left-1/2 -translate-x-1/2 z-50 px-10 py-3 border border-white/20 text-white rounded-full font-light tracking-widest hover:bg-white hover:text-black transition-all duration-500"
+        >
+          RETURN TO VIEW
+        </button>
+      )}
+
+      {/* Canvas Area */}
+      <div 
+        onClick={() => !isDetail && setIsDetail(true)}
+        className="fixed top-0 left-0 w-full h-full cursor-pointer z-0"
+      >
+        <Canvas 
+          shadows 
+          camera={{ position: [0, 0, 5], fov: 40 }}
+          dpr={[1, 2]}
+        >
+          <ambientLight intensity={0.5} />
+          <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} intensity={2} />
+          <pointLight position={[-10, -10, -10]} intensity={1} />
+          <Environment preset="city" />
+
+          <Suspense fallback={null}>
+            <SceneContent isDetail={isDetail} setHovered={setHoveredKey} />
+            <ContactShadows 
+              position={[0, -2.3, 0]} 
+              opacity={0.4} 
+              scale={10} 
+              blur={2} 
+            />
+          </Suspense>
+        </Canvas>
+      </div>
+    </div>
+  );
 }
